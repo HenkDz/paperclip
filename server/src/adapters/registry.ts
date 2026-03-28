@@ -27,6 +27,12 @@ import {
 } from "@paperclipai/adapter-cursor-local/server";
 import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
 import {
+  execute as droidExecute,
+  testEnvironment as droidTestEnvironment,
+  sessionCodec as droidSessionCodec,
+} from "@paperclipai/adapter-droid-local/server";
+import { agentConfigurationDoc as droidAgentConfigurationDoc, models as droidModels } from "@paperclipai/adapter-droid-local";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -124,6 +130,17 @@ const cursorLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: cursorAgentConfigurationDoc,
 };
 
+const droidLocalAdapter: ServerAdapterModule = {
+  type: "droid_local",
+  execute: droidExecute,
+  testEnvironment: droidTestEnvironment,
+  sessionCodec: droidSessionCodec,
+  sessionManagement: getAdapterSessionManagement("droid_local") ?? undefined,
+  models: droidModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: droidAgentConfigurationDoc,
+};
+
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
   execute: geminiExecute,
@@ -187,28 +204,47 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
-const adaptersByType = new Map<string, ServerAdapterModule>(
-  [
+const adaptersByType = new Map<string, ServerAdapterModule>();
+
+function registerBuiltInAdapters() {
+  for (const adapter of [
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
+    droidLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,
     httpAdapter,
-  ].map((a) => [a.type, a]),
-);
+  ]) {
+    adaptersByType.set(adapter.type, adapter);
+  }
+}
 
-export function getServerAdapter(type: string): ServerAdapterModule {
+registerBuiltInAdapters();
+
+export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  adaptersByType.set(adapter.type, adapter);
+}
+
+export function unregisterServerAdapter(type: string): void {
+  if (type === processAdapter.type || type === httpAdapter.type) return;
+  adaptersByType.delete(type);
+}
+
+export function requireServerAdapter(type: string): ServerAdapterModule {
   const adapter = adaptersByType.get(type);
   if (!adapter) {
-    // Fall back to process adapter for unknown types
-    return processAdapter;
+    throw new Error(`Unknown adapter type: ${type}`);
   }
   return adapter;
+}
+
+export function getServerAdapter(type: string): ServerAdapterModule {
+  return adaptersByType.get(type) ?? processAdapter;
 }
 
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {

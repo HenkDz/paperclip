@@ -36,6 +36,7 @@ Built-in adapters:
 
 - `claude_local`: runs your local `claude` CLI
 - `codex_local`: runs your local `codex` CLI
+- `droid_local`: runs your local Factory Droid CLI
 - `opencode_local`: runs your local `opencode` CLI
 - `hermes_local`: runs your local `hermes` CLI
 - `cursor`: runs Cursor in background mode
@@ -44,7 +45,7 @@ Built-in adapters:
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `codex_local`, `droid_local`, `opencode_local`, `hermes_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
 ## 3.2 Runtime behavior
 
@@ -173,7 +174,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 
 ## 10. Minimal setup checklist
 
-1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`).
+1. Choose adapter (e.g. `claude_local`, `codex_local`, `droid_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`).
 2. Set `cwd` to the target workspace (for local adapters).
 3. Optionally add a prompt template (`promptTemplate`) or use the managed instructions bundle.
 4. Configure heartbeat policy (timer and/or assignment wakeups).
