@@ -27,12 +27,6 @@ import {
 } from "@paperclipai/adapter-cursor-local/server";
 import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
 import {
-  execute as droidExecute,
-  testEnvironment as droidTestEnvironment,
-  sessionCodec as droidSessionCodec,
-} from "@paperclipai/adapter-droid-local/server";
-import { agentConfigurationDoc as droidAgentConfigurationDoc, models as droidModels } from "@paperclipai/adapter-droid-local";
-import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -72,18 +66,6 @@ import {
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
-import {
-  execute as hermesExecute,
-  testEnvironment as hermesTestEnvironment,
-  sessionCodec as hermesSessionCodec,
-  listSkills as hermesListSkills,
-  syncSkills as hermesSyncSkills,
-  detectModel as detectModelFromHermes,
-} from "hermes-paperclip-adapter/server";
-import {
-  agentConfigurationDoc as hermesAgentConfigurationDoc,
-  models as hermesModels,
-} from "hermes-paperclip-adapter";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -128,17 +110,6 @@ const cursorLocalAdapter: ServerAdapterModule = {
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
-};
-
-const droidLocalAdapter: ServerAdapterModule = {
-  type: "droid_local",
-  execute: droidExecute,
-  testEnvironment: droidTestEnvironment,
-  sessionCodec: droidSessionCodec,
-  sessionManagement: getAdapterSessionManagement("droid_local") ?? undefined,
-  models: droidModels,
-  supportsLocalAgentJwt: true,
-  agentConfigurationDoc: droidAgentConfigurationDoc,
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -191,19 +162,6 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
-const hermesLocalAdapter: ServerAdapterModule = {
-  type: "hermes_local",
-  execute: hermesExecute,
-  testEnvironment: hermesTestEnvironment,
-  sessionCodec: hermesSessionCodec,
-  listSkills: hermesListSkills,
-  syncSkills: hermesSyncSkills,
-  models: hermesModels,
-  supportsLocalAgentJwt: true,
-  agentConfigurationDoc: hermesAgentConfigurationDoc,
-  detectModel: () => detectModelFromHermes(),
-};
-
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 function registerBuiltInAdapters() {
@@ -213,10 +171,8 @@ function registerBuiltInAdapters() {
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
-    droidLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
-    hermesLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
@@ -225,6 +181,54 @@ function registerBuiltInAdapters() {
 }
 
 registerBuiltInAdapters();
+
+// ---------------------------------------------------------------------------
+// Load external adapter plugins (droid, hermes, etc.)
+//
+// External adapter packages export createServerAdapter() which returns a
+// ServerAdapterModule. The host fills in sessionManagement.
+// ---------------------------------------------------------------------------
+
+import { buildExternalAdapters } from "./plugin-loader.js";
+import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
+
+/** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
+function getDisabledAdapterTypesFromStore(): string[] {
+  return getDisabledAdapterTypes();
+}
+
+/**
+ * Load external adapters from the plugin store and hardcoded sources.
+ * Called once at module initialization. The promise is exported so that
+ * callers (e.g. assertKnownAdapterType, app startup) can await completion
+ * and avoid racing against the loading window.
+ */
+const externalAdaptersReady: Promise<void> = (async () => {
+  try {
+    const externalAdapters = await buildExternalAdapters();
+    for (const externalAdapter of externalAdapters) {
+      adaptersByType.set(
+        externalAdapter.type,
+        {
+          ...externalAdapter,
+          sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
+        },
+      );
+    }
+  } catch (err) {
+    console.error("[paperclip] Failed to load external adapters:", err);
+  }
+})();
+
+/**
+ * Await this before validating adapter types to avoid race conditions
+ * during server startup. External adapters are loaded asynchronously;
+ * calling assertKnownAdapterType before this resolves will reject
+ * valid external adapter types.
+ */
+export function waitForExternalAdapters(): Promise<void> {
+  return externalAdaptersReady;
+}
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
   adaptersByType.set(adapter.type, adapter);
@@ -261,13 +265,32 @@ export function listServerAdapters(): ServerAdapterModule[] {
   return Array.from(adaptersByType.values());
 }
 
+/**
+ * List adapters excluding those that are disabled in settings.
+ * Used for menus and agent creation flows — disabled adapters remain
+ * functional for existing agents but hidden from selection.
+ */
+export function listEnabledServerAdapters(): ServerAdapterModule[] {
+  const disabled = getDisabledAdapterTypesFromStore();
+  const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
+  return disabledSet
+    ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))
+    : Array.from(adaptersByType.values());
+}
+
 export async function detectAdapterModel(
   type: string,
-): Promise<{ model: string; provider: string; source: string } | null> {
+): Promise<{ model: string; provider: string; source: string; candidates?: string[] } | null> {
   const adapter = adaptersByType.get(type);
   if (!adapter?.detectModel) return null;
   const detected = await adapter.detectModel();
-  return detected ? { model: detected.model, provider: detected.provider, source: detected.source } : null;
+  if (!detected) return null;
+  return {
+    model: detected.model,
+    provider: detected.provider,
+    source: detected.source,
+    ...(detected.candidates?.length ? { candidates: detected.candidates } : {}),
+  };
 }
 
 export function findServerAdapter(type: string): ServerAdapterModule | null {

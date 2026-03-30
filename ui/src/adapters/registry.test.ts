@@ -7,6 +7,7 @@ import {
   registerUIAdapter,
   unregisterUIAdapter,
 } from "./registry";
+import { processUIAdapter } from "./process";
 
 const externalUIAdapter: UIAdapterModule = {
   type: "external_test",
@@ -33,16 +34,17 @@ describe("ui adapter registry", () => {
     expect(listUIAdapters().some((adapter) => adapter.type === "external_test")).toBe(true);
   });
 
-  it("includes droid_local as a built-in adapter", () => {
-    expect(findUIAdapter("droid_local")?.label).toBe("Droid (local)");
-  });
-
-  it("falls back to the process adapter after unregistering", () => {
+  it("falls back to the process parser for unknown types after unregistering", () => {
     registerUIAdapter(externalUIAdapter);
 
     unregisterUIAdapter("external_test");
 
     expect(findUIAdapter("external_test")).toBeNull();
-    expect(getUIAdapter("external_test").type).toBe("process");
+    const fallback = getUIAdapter("external_test");
+    // Unknown types return a lazy-loading wrapper (for external adapters),
+    // not the process adapter directly. The type is preserved.
+    expect(fallback.type).toBe("external_test");
+    // But it uses the process parser under the hood.
+    expect(fallback.ConfigFields).toBe(processUIAdapter.ConfigFields);
   });
 });

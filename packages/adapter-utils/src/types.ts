@@ -292,7 +292,7 @@ export interface ServerAdapterModule {
    * Returns the detected model/provider and the config source, or null if
    * the adapter does not support detection or no config is found.
    */
-  detectModel?: () => Promise<{ model: string; provider: string; source: string } | null>;
+  detectModel?: () => Promise<{ model: string; provider: string; source: string; candidates?: string[] } | null>;
 }
 
 // ---------------------------------------------------------------------------

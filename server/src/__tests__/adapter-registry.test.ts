@@ -45,11 +45,6 @@ describe("server adapter registry", () => {
     ]);
   });
 
-  it("includes droid_local as a built-in adapter", async () => {
-    expect(findServerAdapter("droid_local")?.type).toBe("droid_local");
-    expect((await listAdapterModels("droid_local")).length).toBeGreaterThan(0);
-  });
-
   it("removes external adapters when unregistered", () => {
     registerServerAdapter(externalAdapter);
 

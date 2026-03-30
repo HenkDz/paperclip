@@ -21,12 +21,12 @@ describe("adapter metadata", () => {
         value: "external_test",
         label: "external_test",
         comingSoon: false,
+        hidden: false,
       },
     ]);
   });
 
   it("keeps intentionally withheld built-in adapters marked as coming soon", () => {
-    expect(isEnabledAdapterType("droid_local")).toBe(true);
     expect(isEnabledAdapterType("process")).toBe(false);
     expect(isEnabledAdapterType("http")).toBe(false);
   });
