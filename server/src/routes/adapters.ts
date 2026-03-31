@@ -229,6 +229,16 @@ export function adapterRoutes() {
       } else {
         // Local path — normalize (e.g., Windows → WSL) and use the resolved path
         moduleLocalPath = path.resolve(await normalizeLocalPath(packageName));
+
+        // Read version from the local adapter's package.json
+        try {
+          const pkgContent = await import("node:fs/promises");
+          const pkgRaw = await pkgContent.readFile(path.join(moduleLocalPath, "package.json"), "utf-8");
+          const pkg = JSON.parse(pkgRaw);
+          installedVersion = pkg.version;
+        } catch {
+          // Local adapter without a readable package.json — no version
+        }
       }
 
       // Load and register the adapter (use canonicalName for path resolution)
