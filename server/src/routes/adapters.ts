@@ -41,7 +41,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoard } from "./authz.js";
+import { assertBoardOrgAccess } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -192,7 +192,7 @@ export function adapterRoutes() {
    * its model count, and load status.
    */
   router.get("/adapters", async (_req, res) => {
-    assertBoard(_req);
+    assertBoardOrgAccess(_req);
 
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(
@@ -218,7 +218,7 @@ export function adapterRoutes() {
    * - version?: string — target version for npm packages
    */
   router.post("/adapters/install", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
 
@@ -351,7 +351,7 @@ export function adapterRoutes() {
    * Request body: { "disabled": boolean }
    */
   router.patch("/adapters/:type", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
 
     const adapterType = req.params.type;
     const { disabled } = req.body as { disabled?: boolean };
@@ -386,7 +386,7 @@ export function adapterRoutes() {
    * keep the adapter they started with.
    */
   router.patch("/adapters/:type/override", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
 
     const adapterType = req.params.type;
     const { paused } = req.body as { paused?: boolean };
@@ -416,7 +416,7 @@ export function adapterRoutes() {
    * restores the built-in version).
    */
   router.delete("/adapters/:type", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
 
     const adapterType = req.params.type;
 
@@ -489,7 +489,7 @@ export function adapterRoutes() {
    * Cannot be used on built-in adapter types.
    */
   router.post("/adapters/:type/reload", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
 
     const type = req.params.type;
 
@@ -541,7 +541,7 @@ export function adapterRoutes() {
   // This is a convenience shortcut for remove + install with the same
   // package name, but without the risk of losing the store record.
   router.post("/adapters/:type/reinstall", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
 
     const type = req.params.type;
 
@@ -614,7 +614,7 @@ export function adapterRoutes() {
   const CONFIG_SCHEMA_TTL_MS = 30_000;
 
   router.get("/adapters/:type/config-schema", async (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
     const { type } = req.params;
 
     const adapter = findActiveServerAdapter(type);
@@ -652,7 +652,7 @@ export function adapterRoutes() {
   // The adapter package must export a "./ui-parser" entry in package.json
   // pointing to a self-contained ESM module with zero runtime dependencies.
   router.get("/adapters/:type/ui-parser.js", (req, res) => {
-    assertBoard(req);
+    assertBoardOrgAccess(req);
     const { type } = req.params;
     const source = getOrExtractUiParserSource(type);
     if (!source) {
