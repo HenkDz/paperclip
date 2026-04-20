@@ -4539,6 +4539,16 @@ export function heartbeatService(db: Db) {
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      let lastRunActivityTouchMs = Date.now();
+      const touchRunActivity = async () => {
+        const nowMs = Date.now();
+        if (nowMs - lastRunActivityTouchMs < 30_000) return;
+        lastRunActivityTouchMs = nowMs;
+        await db
+          .update(heartbeatRuns)
+          .set({ updatedAt: new Date(nowMs) })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+      };
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
@@ -4572,6 +4582,8 @@ export function heartbeatService(db: Db) {
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
         });
+
+        await touchRunActivity();
       };
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
