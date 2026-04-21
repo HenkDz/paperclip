@@ -36,6 +36,12 @@ const mockAdapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+const mockGetServerAdapter = vi.hoisted(() =>
+  vi.fn(() => ({
+    supportsLocalAgentJwt: false,
+    execute: mockAdapterExecute,
+  })),
+);
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -55,10 +61,7 @@ vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
   return {
     ...actual,
-    getServerAdapter: vi.fn(() => ({
-      supportsLocalAgentJwt: false,
-      execute: mockAdapterExecute,
-    })),
+    getServerAdapter: mockGetServerAdapter,
   };
 });
 
@@ -187,6 +190,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "Recovered stranded heartbeat work.",
       provider: "test",
       model: "test-model",
+    }));
+    mockGetServerAdapter.mockReset();
+    mockGetServerAdapter.mockImplementation(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
     }));
     runningProcesses.clear();
     for (const child of childProcesses) {
