@@ -22,6 +22,7 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
@@ -113,7 +114,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
@@ -203,8 +204,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   
+  // Prepend installed skill `bin/` dirs to PATH so an agent's bash tool can
+  // invoke skill binaries (e.g. `paperclip-get-issue`) by name. Without this,
+  // any pi_local agent whose AGENTS.md calls a skill command via bash hits
+  // exit 127 "command not found". Only include skills that ensurePiSkillsInjected
+  // actually linked — otherwise non-injected skills' binaries would be reachable
+  // to the agent.
+  const injectedSkillKeys = new Set(desiredPiSkillNames);
+  const skillBinDirs = piSkillEntries
+    .filter((entry) => injectedSkillKeys.has(entry.key) && entry.source.length > 0)
+    .map((entry) => path.join(entry.source, "bin"));
+  const mergedEnv = ensurePathInEnv({ ...process.env, ...env });
+  const pathKey =
+    typeof mergedEnv.Path === "string" && mergedEnv.Path.length > 0 && !mergedEnv.PATH
+      ? "Path"
+      : "PATH";
+  const basePath = mergedEnv[pathKey] ?? "";
+  if (skillBinDirs.length > 0) {
+    const existing = basePath.split(path.delimiter).filter(Boolean);
+    const additions = skillBinDirs.filter((dir) => !existing.includes(dir));
+    if (additions.length > 0) {
+      mergedEnv[pathKey] = [...additions, basePath].filter(Boolean).join(path.delimiter);
+    }
+  }
   const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+    Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -276,7 +300,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-        `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.`;
+        DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
     } catch (err) {
       instructionsReadFailed = true;
       const reason = err instanceof Error ? err.message : String(err);
