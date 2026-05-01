@@ -3,6 +3,7 @@
  * removing the override restores the built-in version.
  */
 export const BUILTIN_ADAPTER_TYPES = new Set([
+  "acpx_local",
   "claude_local",
   "codex_local",
   "cursor",

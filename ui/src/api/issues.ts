@@ -8,6 +8,7 @@ import type {
   FeedbackVote,
   Issue,
   IssueAttachment,
+  IssueCostSummary,
   IssueComment,
   IssueDocument,
   IssueLabel,
@@ -48,6 +49,7 @@ export const issuesApi = {
       includeBlockedBy?: boolean;
       q?: string;
       limit?: number;
+      offset?: number;
     },
   ) => {
     const params = new URLSearchParams();
@@ -70,6 +72,7 @@ export const issuesApi = {
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
@@ -157,6 +160,8 @@ export const issuesApi = {
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+  cancelInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
   respondToInteraction: (
     id: string,
     interactionId: string,
@@ -166,6 +171,7 @@ export const issuesApi = {
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
+  getCostSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters ?? {})) {

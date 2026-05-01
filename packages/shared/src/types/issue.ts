@@ -6,6 +6,7 @@ import type {
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
@@ -59,6 +60,7 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }
@@ -137,6 +139,22 @@ export interface IssueBlockerAttention {
   attentionBlockerCount: number;
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
+}
+
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus;
+  priority: IssuePriority;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IssueRelation {
@@ -264,6 +282,7 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
+  productivityReview?: IssueProductivityReview | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -369,6 +388,8 @@ export interface AskUserQuestionsAnswer {
 export interface AskUserQuestionsResult {
   version: 1;
   answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
   summaryMarkdown?: string | null;
 }
 
