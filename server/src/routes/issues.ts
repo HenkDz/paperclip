@@ -2531,8 +2531,12 @@ export function issueRoutes(
         });
       }
 
+      const statusChangeActorIsAssignee =
+        actor.actorType === "agent" && actor.actorId === issue.assigneeAgentId;
+
       if (
         !assigneeChanged &&
+        !statusChangeActorIsAssignee &&
         (statusChangedFromBacklog || statusChangedFromBlockedToTodo || statusChangedFromClosedToTodo) &&
         issue.assigneeAgentId
       ) {
@@ -2561,7 +2565,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || actorIsAgent || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
