@@ -1524,6 +1524,12 @@ export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect):
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
+function normalizeRepoUrlForComparison(value: string | null | undefined) {
+  const repoUrl = readNonEmptyString(value);
+  if (!repoUrl) return null;
+  return repoUrl.trim().replace(/\.git$/i, "").toLowerCase();
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -1552,12 +1558,6 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     };
   }
   const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
-  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
   if (path.resolve(projectCwd) === path.resolve(previousCwd)) {
     return {
       sessionParams: previousSessionParams,
@@ -1565,17 +1565,30 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     };
   }
   const previousWorkspaceId = readNonEmptyString(previousSessionParams?.workspaceId);
-  if (
+  const previousRepoUrl = normalizeRepoUrlForComparison(readNonEmptyString(previousSessionParams?.repoUrl));
+  const resolvedRepoUrl = normalizeRepoUrlForComparison(resolvedWorkspace.repoUrl);
+  const workspaceMismatch =
     previousWorkspaceId &&
     resolvedWorkspace.workspaceId &&
-    previousWorkspaceId !== resolvedWorkspace.workspaceId
-  ) {
+    previousWorkspaceId !== resolvedWorkspace.workspaceId;
+  const repoMismatch =
+    previousRepoUrl &&
+    resolvedRepoUrl &&
+    previousRepoUrl !== resolvedRepoUrl;
+  if (workspaceMismatch || repoMismatch) {
+    return {
+      sessionParams: null,
+      warning:
+        `Saved session "${previousSessionId}" points to a different workspace context ` +
+        `("${previousCwd}"). Starting a fresh session in project workspace "${projectCwd}".`,
+    };
+  }
+  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
     };
   }
-
   const migratedSessionParams: Record<string, unknown> = {
     ...(previousSessionParams ?? {}),
     cwd: projectCwd,
