@@ -1602,6 +1602,66 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("does not inherit a parent project workspace without explicit reuse when the parent has no execution workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const parentIssueId = randomUUID();
+    const staleProjectWorkspaceId = randomUUID();
+    const primaryProjectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values([
+      {
+        id: staleProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Stale workspace",
+        isPrimary: false,
+      },
+      {
+        id: primaryProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Primary workspace",
+        isPrimary: true,
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: staleProjectWorkspaceId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      title: "Child issue",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.projectWorkspaceId).toBe(primaryProjectWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
+  });
+
   it("captures the assignee default environment when neither issue nor project specifies one", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -2115,6 +2175,66 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+
+  it("inherits the source project workspace when reuse is explicitly requested without an execution workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const sourceProjectWorkspaceId = randomUUID();
+    const primaryProjectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values([
+      {
+        id: sourceProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Source workspace",
+        isPrimary: false,
+      },
+      {
+        id: primaryProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Primary workspace",
+        isPrimary: true,
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: sourceProjectWorkspaceId,
+      title: "Source issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const followUp = await svc.create(companyId, {
+      projectId,
+      title: "Follow-up issue",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+    });
+
+    expect(followUp.parentId).toBeNull();
+    expect(followUp.projectWorkspaceId).toBe(sourceProjectWorkspaceId);
+    expect(followUp.executionWorkspaceId).toBeNull();
   });
 
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
