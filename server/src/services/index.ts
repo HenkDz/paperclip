@@ -56,3 +56,5 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { isVerificationRequired, validateVerificationBlock, assertReviewerVerificationBlock } from "./issue-verification.js";
+export { extractACSection, parseShellCommands, parseFileChecks, parseCriteria, evaluateACForIssue, shouldOptOutOfACEvaluation, type ParsedShellCommand, type ParsedFileCheck, type ParsedCriterion, type ShellCommandResult, type FileCheckResult, type ACEvaluationResult, type ACEvaluatorConfig } from "./issue-ac-evaluator.js";

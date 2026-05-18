@@ -40,6 +40,8 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  verificationBlockSchema,
+  type VerificationBlock,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
@@ -75,6 +77,8 @@ import {
   projectService,
   routineService,
   workProductService,
+  assertReviewerVerificationBlock,
+  evaluateACForIssue,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -2928,6 +2932,7 @@ export function issueRoutes(
     const {
       comment: commentBody,
       reviewRequest,
+      verification,
       reopen: reopenRequested,
       resume: resumeRequested,
       interrupt: interruptRequested,
@@ -3242,6 +3247,50 @@ export function issueRoutes(
       }
     }
 
+    // AGE-14798: Server-side AC evaluation gate.
+    // When an issue transitions to `done`, parse its `## Acceptance Criteria` section,
+    // run shell commands and file-existence checks, and block with 422 if any fail.
+    // Opt-out: issues with executionPolicy null and no linked PRs bypass this gate.
+    if (becomingDone) {
+      const acResult = await evaluateACForIssue({
+        description: existing.description,
+        executionPolicy: existing.executionPolicy,
+        hasLinkedPRs: await workProductsSvc.listForIssue(existing.id).then(
+          (wps) => wps.some((wp) => wp.type === "pull_request"),
+        ),
+      });
+      if (!acResult.passed && !acResult.optedOut) {
+        logger.warn(
+          {
+            issueId: existing.id,
+            issueIdentifier: existing.identifier,
+            failedCommands: acResult.commandResults.filter((r) => !r.passed).map((r) => r.command),
+            failedFiles: acResult.fileCheckResults.filter((r) => !r.passed).map((r) => r.path),
+            failureReasons: acResult.failureReasons,
+          },
+          "AC-done guard: blocking done transition due to failing acceptance criteria (AGE-14798)",
+        );
+        res.status(422).json({
+          error: "Cannot mark issue as done: acceptance criteria verification failed",
+          code: "AC_DONE_GUARD_BLOCKED",
+          failureReasons: acResult.failureReasons,
+          commandResults: acResult.commandResults.map((r) => ({
+            command: r.command,
+            exitCode: r.exitCode,
+            passed: r.passed,
+            timedOut: r.timedOut,
+            ...(r.expectedOutput ? { expectedOutput: r.expectedOutput, outputMatched: r.outputMatched } : {}),
+          })),
+          fileCheckResults: acResult.fileCheckResults.map((r) => ({
+            path: r.path,
+            exists: r.exists,
+            passed: r.passed,
+          })),
+        });
+        return;
+      }
+    }
+
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -3262,6 +3311,50 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+
+    // AGE-14800: Reviewer verification block guard.
+    // Reviewer agents (role="qa") must include a populated verification block
+    // when transitioning an issue to in_review or done. This ensures reviewers
+    // independently verify work rather than approving based on narration alone.
+    {
+      const nextStatus = typeof updateFields.status === "string"
+        ? updateFields.status
+        : existing.status;
+      if (req.actor.type === "agent" && req.actor.agentId && (nextStatus === "in_review" || nextStatus === "done") && existing.status !== nextStatus) {
+        const actorAgent = await agentsSvc.getById(req.actor.agentId);
+        if (actorAgent && actorAgent.role === "qa") {
+          try {
+            const verifiedBlock = await assertReviewerVerificationBlock({
+              actorType: req.actor.type,
+              agentRole: actorAgent.role,
+              currentStatus: existing.status,
+              nextStatus,
+              verification,
+            });
+            // Attach verified block to the issue update for audit trail
+            if (verifiedBlock) {
+              updateFields._verificationBlock = verifiedBlock;
+            }
+          } catch (err: unknown) {
+            if (err instanceof HttpError) {
+              res.status(err.status).json({ error: err.message, ...(err.details ? { details: err.details } : {}) });
+              return;
+            }
+            throw err;
+          }
+        }
+      }
+    }
+
+    // AGE-14800: Extract verification block from updateFields before DB write.
+    // The _verificationBlock is set by the reviewer guard above for audit trail
+    // but is NOT a column in the issues table — must not be passed to svc.update().
+    const verificationBlockForAudit = (updateFields as Record<string, unknown>)._verificationBlock as
+      | import("@paperclipai/shared").VerificationBlock
+      | undefined;
+    if (verificationBlockForAudit !== undefined) {
+      delete (updateFields as Record<string, unknown>)._verificationBlock;
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -3466,6 +3559,7 @@ export function issueRoutes(
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
         _previous: hasFieldChanges ? previous : undefined,
+        ...(verificationBlockForAudit ? { verificationBlock: verificationBlockForAudit } : {}),
         ...summarizeIssueReferenceActivityDetails(
           updateReferenceDiff
             ? {
