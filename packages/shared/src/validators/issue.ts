@@ -415,11 +415,38 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
+// AGE-14800: Reviewer verification block schema.
+// Reviewer agents (role="qa") must include a populated verification block
+// when transitioning an issue to in_review or done. This provides structural
+// enforcement that reviewers independently verify work rather than approving
+// based on narration alone.
+export const verificationCommandResultSchema = z.object({
+  command: z.string().min(1),
+  exitCode: z.number(),
+  outputSnippet: z.string().optional(),
+});
+
+export const verificationFilesystemCheckSchema = z.object({
+  path: z.string().min(1),
+  exists: z.boolean(),
+});
+
+export const verificationBlockSchema = z.object({
+  prDiffLinesReviewed: z.number().int().min(0),
+  acCommandsRun: z.array(verificationCommandResultSchema),
+  ciState: z.enum(["green", "red", "mixed", "not_applicable"]),
+  filesystemChecks: z.array(verificationFilesystemCheckSchema),
+  narrative: z.string().optional(),
+});
+
+export type VerificationBlock = z.infer<typeof verificationBlockSchema>;
+
 export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
+  verification: verificationBlockSchema.optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
