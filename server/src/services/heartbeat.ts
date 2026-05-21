@@ -6051,6 +6051,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function resolveTimerWakeIssueContextForAgent(agent: typeof agents.$inferSelect) {
+    const candidates = await db
+      .select({
+        id: issues.id,
+        projectId: issues.projectId,
+        status: issues.status,
+        priority: issues.priority,
+        updatedAt: issues.updatedAt,
+        createdAt: issues.createdAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          isNull(issues.assigneeUserId),
+          notInArray(issues.status, ["backlog", "done", "cancelled"]),
+        ),
+      );
+    if (candidates.length === 0) return null;
+
+    const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+      agent.companyId,
+      candidates.map((candidate) => candidate.id),
+    );
+    const prioritized = [...candidates].sort((left, right) => {
+      const leftReady = dependencyReadiness.get(left.id)?.isDependencyReady ?? true;
+      const rightReady = dependencyReadiness.get(right.id)?.isDependencyReady ?? true;
+      const leftRank = left.status === "in_progress" ? 0 : leftReady ? 1 : 2;
+      const rightRank = right.status === "in_progress" ? 0 : rightReady ? 1 : 2;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+
+      const leftPriorityRank = issueRunPriorityRank(left.priority);
+      const rightPriorityRank = issueRunPriorityRank(right.priority);
+      if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
+
+      const updatedAtDelta = right.updatedAt.getTime() - left.updatedAt.getTime();
+      if (updatedAtDelta !== 0) return updatedAtDelta;
+      return left.createdAt.getTime() - right.createdAt.getTime();
+    });
+    const selected = prioritized[0] ?? null;
+    if (!selected) return null;
+
+    return {
+      issueId: selected.id,
+      projectId: selected.projectId ?? null,
+      taskId: selected.id,
+      taskKey: selected.id,
+    };
+  }
+
   async function listQueuedRunDependencyReadiness(
     companyId: string,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -9064,6 +9115,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         enrichedContextSnapshot.taskKey = explicitResumeSession.taskKey;
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
+    }
+    if (source === "timer" && !readNonEmptyString(enrichedContextSnapshot.issueId) && !issueId) {
+      // Scheduler wakes need a canonical issue/project seed; otherwise the run
+      // falls back to the last task-session cwd, which can be a different repo.
+      const timerIssueContext = await resolveTimerWakeIssueContextForAgent(agent);
+      if (timerIssueContext) {
+        enrichedContextSnapshot.issueId = timerIssueContext.issueId;
+        if (!readNonEmptyString(enrichedContextSnapshot.taskId)) {
+          enrichedContextSnapshot.taskId = timerIssueContext.taskId;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.taskKey)) {
+          enrichedContextSnapshot.taskKey = timerIssueContext.taskKey;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.projectId) && timerIssueContext.projectId) {
+          enrichedContextSnapshot.projectId = timerIssueContext.projectId;
+        }
+        issueId = timerIssueContext.issueId;
+      }
     }
     const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const sessionBefore =
