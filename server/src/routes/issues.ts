@@ -1993,6 +1993,7 @@ export function issueRoutes(
     const attention = req.query.attention as string | undefined;
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
+    const rawUpdatedSince = req.query.updatedSince as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -2030,6 +2031,10 @@ export function issueRoutes(
       res.status(400).json({ error: "sortDir must be 'asc' or 'desc' when provided" });
       return;
     }
+    if (rawUpdatedSince !== undefined && !Number.isFinite(new Date(rawUpdatedSince).getTime())) {
+      res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
@@ -2064,6 +2069,7 @@ export function issueRoutes(
       offset,
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      updatedSince: rawUpdatedSince,
     });
     const issueIds = result.map((issue) => issue.id);
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
