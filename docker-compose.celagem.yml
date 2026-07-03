@@ -1,0 +1,67 @@
+# Celagem production compose: Paperclip + private Hermes dashboard.
+# The dashboard intentionally binds to the VPS loopback only (host network,
+# 127.0.0.1:9119). Access it via an SSH tunnel; do not expose 9119 publicly
+# unless Hermes dashboard auth/OAuth is configured first.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3100:3100"
+    environment:
+      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      HERMES_HOME: "/paperclip/.hermes"
+    volumes:
+      - paperclip-data:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
+
+  hermes-dashboard:
+    restart: unless-stopped
+    image: paperclip-server:latest
+    network_mode: "host"
+    command:
+      - hermes
+      - dashboard
+      - --no-open
+      - --skip-build
+      - --host
+      - 127.0.0.1
+      - --port
+      - "9119"
+    environment:
+      HOME: "/paperclip"
+      HERMES_HOME: "/paperclip/.hermes"
+    volumes:
+      - paperclip-data:/paperclip
+      - ./hermes-web_dist:/usr/local/lib/hermes-agent/hermes_cli/web_dist:ro
+    depends_on:
+      - server
+
+volumes:
+  pgdata:
+  paperclip-data:

@@ -61,14 +61,25 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && mkdir -p /paperclip/.hermes \
+  && chown node:node /paperclip /paperclip/.hermes
+
+# Hermes CLI powers the embedded Hermes dashboard/Celagem profiles when this
+# image is used with docker-compose.celagem.yml. Download the installer first;
+# piping directly through `curl | bash` would apply HOME/HERMES_HOME only to
+# curl, not to the installer process.
+RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o /tmp/hermes-install.sh \
+  && HOME=/paperclip HERMES_HOME=/paperclip/.hermes bash /tmp/hermes-install.sh --skip-setup --no-skills --skip-browser \
+  && rm /tmp/hermes-install.sh \
+  && chown -R node:node /paperclip/.hermes \
+  && hermes --version
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
+  HERMES_HOME=/paperclip/.hermes \
   HOST=0.0.0.0 \
   PORT=3100 \
   SERVE_UI=true \
