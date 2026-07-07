@@ -426,6 +426,55 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
   });
 
+  it("filters issues updated strictly after the provided timestamp", async () => {
+    const companyId = randomUUID();
+    const beforeIssueId = randomUUID();
+    const equalIssueId = randomUUID();
+    const afterIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: beforeIssueId,
+        companyId,
+        title: "Before threshold",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-05-17T21:12:29.992Z"),
+      },
+      {
+        id: equalIssueId,
+        companyId,
+        title: "Equal threshold",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-05-17T21:12:29.993Z"),
+      },
+      {
+        id: afterIssueId,
+        companyId,
+        title: "After threshold",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-05-17T21:12:29.994Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      updatedSince: "2026-05-17T21:12:29.993Z",
+      sortField: "updated",
+      sortDir: "asc",
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([afterIssueId]);
+  });
+
   it("ranks comment matches ahead of description-only matches", async () => {
     const companyId = randomUUID();
     const commentMatchId = randomUUID();
