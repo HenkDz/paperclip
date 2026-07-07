@@ -134,6 +134,17 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(searchRes.body.map((issue: { identifier: string }) => issue.identifier)).toContain("LNG-1");
   });
 
+  it("rejects invalid updatedSince query values", async () => {
+    const searchRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ updatedSince: "not-a-date" });
+
+    expect(searchRes.status, JSON.stringify(searchRes.body)).toBe(400);
+    expect(searchRes.body).toEqual({
+      error: "updatedSince must be a valid ISO 8601 timestamp when provided",
+    });
+  });
+
   it("preserves multilingual comment bodies", async () => {
     const commentRes = await request(app)
       .post("/api/issues/LNG-1/comments")
