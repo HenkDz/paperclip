@@ -122,6 +122,19 @@ export function accessService(db: Db) {
       .orderBy(sql`${companyMemberships.createdAt} asc`);
   }
 
+  async function resolveResponsibleUserId(companyId: string, preferredUserId: string | null | undefined) {
+    if (preferredUserId) {
+      const membership = await getMembership(companyId, "user", preferredUserId);
+      if (membership?.status === "active") {
+        return preferredUserId;
+      }
+    }
+
+    const activeMemberships = await listActiveUserMemberships(companyId);
+    const activeOwner = activeMemberships.find((membership) => membership.membershipRole === "owner");
+    return activeOwner?.principalId ?? activeMemberships[0]?.principalId ?? null;
+  }
+
   async function setMemberPermissions(
     companyId: string,
     memberId: string,
@@ -789,6 +802,7 @@ export function accessService(db: Db) {
     ensureMembership,
     listMembers,
     listActiveUserMemberships,
+    resolveResponsibleUserId,
     copyActiveUserMemberships,
     ensureRoleDefaultGrants,
     archiveMember,

@@ -105,6 +105,21 @@ describeEmbeddedPostgres("access service", () => {
     expect(unchanged.status).toBe("active");
   });
 
+  it("resolves an active owner instead of an inactive sentinel user", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "built-in-bundles",
+      status: "suspended",
+      membershipRole: "member",
+    });
+
+    await expect(access.resolveResponsibleUserId(company.id, "built-in-bundles")).resolves.toBe(owner.principalId);
+  });
+
   it("archives members, clears grants, and reassigns open issues without deleting history", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db

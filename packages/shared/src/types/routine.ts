@@ -57,6 +57,7 @@ export interface Routine {
   title: string;
   description: string | null;
   assigneeAgentId: string | null;
+  responsibleUserId: string | null;
   priority: string;
   status: string;
   concurrencyPolicy: string;
@@ -97,6 +98,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   title: string;
   description: string | null;
   assigneeAgentId: string | null;
+  responsibleUserId: string | null;
   priority: IssuePriority;
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;

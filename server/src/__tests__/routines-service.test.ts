@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecrets,
   companySecretVersions,
@@ -18,6 +19,7 @@ import {
   projectWorkspaces,
   projects,
   routineRuns,
+  routineRevisions,
   routines,
   routineTriggers,
   secretAccessEvents,
@@ -64,6 +66,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
+    await db.delete(routineRevisions);
     await db.delete(routines);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
@@ -72,6 +75,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
     await db.delete(instanceSettings);
@@ -117,6 +121,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+    });
+
+    const ownerUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "owner",
     });
 
     await db.insert(agents).values({
@@ -187,7 +200,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
+    return { companyId, agentId, issueSvc, ownerUserId, projectId, routine, svc, wakeups };
   }
 
   it("filters listed routines by project", async () => {
@@ -221,6 +234,101 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(projectRoutines.map((entry) => entry.id)).toEqual([routine.id]);
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
+  });
+
+  it("resolves built-in actors to the active owner when creating routines", async () => {
+    const { companyId, agentId, ownerUserId, projectId, svc } = await seedFixture();
+
+    const created = await svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "owner-attributed routine",
+      description: "Created by a built-in actor",
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, { userId: "built-in-bundles" });
+
+    expect(created.responsibleUserId).toBe(ownerUserId);
+    expect(created.createdByUserId).toBe(ownerUserId);
+    expect(created.updatedByUserId).toBe(ownerUserId);
+
+    const revisions = await svc.listRevisions(created.id);
+    expect(revisions[0]?.snapshot.routine.responsibleUserId).toBe(ownerUserId);
+  });
+
+  it("repairs stale responsible user attribution before reconciliation", async () => {
+    const { agentId, companyId, ownerUserId, projectId, svc } = await seedFixture();
+    const routineId = randomUUID();
+    const revisionId = randomUUID();
+    const revisionSnapshot = {
+      version: 1 as const,
+      routine: {
+        id: routineId,
+        companyId,
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "stale built-in routine",
+        description: "Needs repair",
+        assigneeAgentId: agentId,
+        responsibleUserId: "built-in-bundles",
+        priority: "medium" as const,
+        status: "active" as const,
+        concurrencyPolicy: "coalesce_if_active" as const,
+        catchUpPolicy: "skip_missed" as const,
+        variables: [],
+        env: null,
+      },
+      triggers: [],
+    };
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "stale built-in routine",
+      description: "Needs repair",
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      variables: [],
+      env: null,
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: null,
+      createdByUserId: "built-in-bundles",
+      updatedByAgentId: null,
+      updatedByUserId: "built-in-bundles",
+    });
+    await db.insert(routineRevisions).values({
+      id: revisionId,
+      companyId,
+      routineId,
+      revisionNumber: 1,
+      title: "stale built-in routine",
+      description: "Needs repair",
+      snapshot: revisionSnapshot,
+      changeSummary: "Imported with stale attribution",
+      restoredFromRevisionId: null,
+      createdByAgentId: null,
+      createdByUserId: "built-in-bundles",
+      createdByRunId: null,
+    });
+
+    const repaired = await svc.repairResponsibleUserAttribution(routineId, { userId: "built-in-bundles" });
+
+    expect(repaired.repaired).toBe(true);
+    expect(repaired.responsibleUserId).toBe(ownerUserId);
+    expect(repaired.routine.responsibleUserId).toBe(ownerUserId);
+    expect(repaired.revision?.snapshot.routine.responsibleUserId).toBe(ownerUserId);
   });
 
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {

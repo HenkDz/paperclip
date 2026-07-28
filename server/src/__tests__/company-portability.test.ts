@@ -22,6 +22,7 @@ const accessSvc = {
   ensureMembership: vi.fn(),
   ensureRoleDefaultGrants: vi.fn(),
   listActiveUserMemberships: vi.fn(),
+  resolveResponsibleUserId: vi.fn(),
   copyActiveUserMemberships: vi.fn(),
   setPrincipalPermission: vi.fn(),
 };
@@ -391,6 +392,7 @@ describe("company portability", () => {
         status: "active",
       },
     ]);
+    accessSvc.resolveResponsibleUserId.mockResolvedValue("user-1");
     accessSvc.copyActiveUserMemberships.mockResolvedValue([]);
     agentInstructionsSvc.exportFiles.mockImplementation(async (agent: { name: string }) => ({
       files: { "AGENTS.md": agent.name === "CMO" ? "You are CMO." : "You are ClaudeCoder." },

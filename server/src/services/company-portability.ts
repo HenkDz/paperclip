@@ -4382,6 +4382,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (!targetCompany) throw notFound("Target company not found");
 
+    const responsibleUserId = await access.resolveResponsibleUserId(targetCompany.id, actorUserId ?? null);
+
     const importedAgentEnvSlugs = new Set(
       plan.preview.plan.agentPlans
         .filter((entry) => entry.action !== "skip")
@@ -4875,7 +4877,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               variables: routineDefinition.variables ?? [],
             }, {
               agentId: null,
-              userId: actorUserId ?? null,
+              userId: responsibleUserId,
             });
             for (const trigger of routineDefinition.triggers) {
               if (trigger.kind === "schedule") {
@@ -4887,7 +4889,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   timezone: trigger.timezone!,
                 }, {
                   agentId: null,
-                  userId: actorUserId ?? null,
+                  userId: responsibleUserId,
                 });
                 continue;
               }
@@ -4898,12 +4900,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   enabled: trigger.enabled,
                   signingMode:
                     trigger.signingMode && ROUTINE_TRIGGER_SIGNING_MODES.includes(trigger.signingMode as any)
-                      ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
+                    ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
                       : "bearer",
                   replayWindowSec: trigger.replayWindowSec ?? 300,
                 }, {
                   agentId: null,
-                  userId: actorUserId ?? null,
+                  userId: responsibleUserId,
                 });
                 continue;
               }
@@ -4913,7 +4915,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 enabled: trigger.enabled,
               }, {
                 agentId: null,
-                userId: actorUserId ?? null,
+                userId: responsibleUserId,
               });
             }
             continue;

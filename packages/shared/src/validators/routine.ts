@@ -80,6 +80,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().nullable(),
   assigneeAgentId: z.string().uuid().nullable(),
+  responsibleUserId: z.string().nullable().default(null),
   priority: z.enum(ISSUE_PRIORITIES),
   status: z.enum(ROUTINE_STATUSES),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES),

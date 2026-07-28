@@ -50,6 +50,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { accessService } from "./access.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
@@ -410,6 +411,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     title: routine.title,
     description: routine.description,
     assigneeAgentId: routine.assigneeAgentId,
+    responsibleUserId: routine.createdByUserId ?? null,
     priority: routine.priority as RoutineRevisionSnapshotV1["routine"]["priority"],
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
@@ -472,6 +474,21 @@ function mapRoutineRevision(row: typeof routineRevisions.$inferSelect): RoutineR
   };
 }
 
+function mapRoutine(row: RoutineRow): Routine {
+  return {
+    ...row,
+    responsibleUserId: row.createdByUserId ?? null,
+  };
+}
+
+async function resolveResponsibleUserId(
+  access: ReturnType<typeof accessService>,
+  companyId: string,
+  preferredUserId: string | null | undefined,
+) {
+  return access.resolveResponsibleUserId(companyId, preferredUserId);
+}
+
 export function routineService(
   db: Db,
   deps: {
@@ -480,6 +497,7 @@ export function routineService(
   } = {},
 ) {
   const issueSvc = issueService(db);
+  const access = accessService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
@@ -601,6 +619,68 @@ export function routineService(
     return {
       routine: updatedRoutine ?? { ...routine, latestRevisionId: revision.id, latestRevisionNumber: nextRevisionNumber, updatedAt: now },
       revision: mapRoutineRevision(revision),
+    };
+  }
+
+  async function resolveRoutineActorUserId(companyId: string, actor: Actor) {
+    return resolveResponsibleUserId(access, companyId, actor.userId ?? null);
+  }
+
+  async function repairRoutineResponsibleUserAttribution(
+    executor: Db,
+    routine: RoutineRow,
+    actor: Actor,
+  ): Promise<{ routine: RoutineRow; revision: RoutineRevision | null; repaired: boolean; responsibleUserId: string | null }> {
+    const responsibleUserId = await resolveRoutineActorUserId(routine.companyId, actor);
+    if (!responsibleUserId) {
+      return { routine, revision: null, repaired: false, responsibleUserId: null };
+    }
+
+    const latestRevision = routine.latestRevisionId
+      ? await executor
+        .select()
+        .from(routineRevisions)
+        .where(and(
+          eq(routineRevisions.companyId, routine.companyId),
+          eq(routineRevisions.routineId, routine.id),
+          eq(routineRevisions.id, routine.latestRevisionId),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const routineAttributionMatches =
+      (routine.createdByUserId ?? null) === responsibleUserId &&
+      (routine.updatedByUserId ?? null) === responsibleUserId;
+    const latestRevisionMatches = latestRevision ? (latestRevision.createdByUserId ?? null) === responsibleUserId : true;
+    if (routineAttributionMatches && latestRevisionMatches) {
+      return {
+        routine,
+        revision: latestRevision ? mapRoutineRevision(latestRevision) : null,
+        repaired: false,
+        responsibleUserId,
+      };
+    }
+
+    const now = new Date();
+    const [updatedRoutine] = await executor
+      .update(routines)
+      .set({
+        createdByUserId: responsibleUserId,
+        updatedByUserId: responsibleUserId,
+        updatedAt: now,
+      })
+      .where(eq(routines.id, routine.id))
+      .returning();
+    const repaired = await appendRoutineRevision(executor, updatedRoutine ?? routine, {
+      ...actor,
+      userId: responsibleUserId,
+    }, {
+      changeSummary: "Repaired responsible user attribution",
+    });
+    return {
+      routine: repaired.routine,
+      revision: repaired.revision,
+      repaired: true,
+      responsibleUserId,
     };
   }
 
@@ -1428,7 +1508,10 @@ export function routineService(
   }
 
   return {
-    get: getRoutineById,
+    get: async (id: string) => {
+      const row = await getRoutineById(id);
+      return row ? mapRoutine(row) : null;
+    },
     getTrigger: getTriggerById,
 
     list: async (
@@ -1451,7 +1534,7 @@ export function routineService(
         listManagedRoutineMetadata(routineIds),
       ]);
       return rows.map((row) => ({
-        ...row,
+        ...mapRoutine(row),
         managedByPlugin: managedByRoutine.get(row.id) ?? null,
         triggers: (triggersByRoutine.get(row.id) ?? []).map((trigger) => ({
           id: trigger.id,
@@ -1557,7 +1640,7 @@ export function routineService(
       ]);
 
       return {
-        ...row,
+        ...mapRoutine(row),
         managedByPlugin: managedByRoutine.get(row.id) ?? null,
         project,
         assignee,
@@ -1573,6 +1656,7 @@ export function routineService(
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
+      const responsibleUserId = await resolveRoutineActorUserId(companyId, actor);
       const env = input.env === undefined || input.env === null
         ? null
         : await secretsSvc.normalizeEnvBindingsForPersistence(companyId, input.env, {
@@ -1604,12 +1688,15 @@ export function routineService(
             variables,
             env,
             createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
+            createdByUserId: responsibleUserId,
             updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
+            updatedByUserId: responsibleUserId,
           })
           .returning();
-        const { routine } = await appendRoutineRevision(txDb, created, actor, {
+        const { routine } = await appendRoutineRevision(txDb, created, {
+          ...actor,
+          userId: responsibleUserId,
+        }, {
           changeSummary: "Created routine",
         });
         if (env) {
@@ -1620,7 +1707,7 @@ export function routineService(
             { db: tx },
           );
         }
-        return routine;
+        return mapRoutine(routine);
       });
       return createdRoutine;
     },
@@ -1683,57 +1770,63 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
 
-        if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
+        let currentRoutine = locked;
+        const repair = await repairRoutineResponsibleUserAttribution(txDb, currentRoutine, actor);
+        if (repair.repaired) {
+          currentRoutine = repair.routine;
+        }
+
+        if (patch.baseRevisionId && patch.baseRevisionId !== currentRoutine.latestRevisionId) {
           throw conflict("Routine was updated by someone else", {
-            currentRevisionId: locked.latestRevisionId,
+            currentRevisionId: currentRoutine.latestRevisionId,
           });
         }
 
         const candidate: RoutineRow = {
-          ...locked,
+          ...currentRoutine,
           projectId: nextProjectId,
-          goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
-          parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
+          goalId: patch.goalId === undefined ? currentRoutine.goalId : patch.goalId,
+          parentIssueId: patch.parentIssueId === undefined ? currentRoutine.parentIssueId : patch.parentIssueId,
           title: nextTitle,
           description: nextDescription,
           assigneeAgentId: nextAssigneeAgentId,
-          priority: patch.priority ?? locked.priority,
+          priority: patch.priority ?? currentRoutine.priority,
           status: nextStatus,
-          concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
-          catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
+          concurrencyPolicy: patch.concurrencyPolicy ?? currentRoutine.concurrencyPolicy,
+          catchUpPolicy: patch.catchUpPolicy ?? currentRoutine.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
           updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
+          updatedByUserId: repair.responsibleUserId ?? currentRoutine.updatedByUserId,
         };
 
-        if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
-          return locked;
+        if (currentRoutine.latestRevisionId && routineCurrentFieldsMatch(currentRoutine, candidate)) {
+          return mapRoutine(currentRoutine);
         }
 
         const nextSnapshot = await buildRoutineRevisionSnapshot(txDb, candidate);
-        if (locked.latestRevisionId) {
+        if (currentRoutine.latestRevisionId) {
           const latestRevision = await txDb
             .select({ snapshot: routineRevisions.snapshot })
             .from(routineRevisions)
             .where(
               and(
-                eq(routineRevisions.companyId, locked.companyId),
-                eq(routineRevisions.routineId, locked.id),
-                eq(routineRevisions.id, locked.latestRevisionId),
+                eq(routineRevisions.companyId, currentRoutine.companyId),
+                eq(routineRevisions.routineId, currentRoutine.id),
+                eq(routineRevisions.id, currentRoutine.latestRevisionId),
               ),
             )
             .then((rows) => rows[0] ?? null);
           if (latestRevision && snapshotsMatch(nextSnapshot, latestRevision.snapshot as RoutineRevisionSnapshotV1)) {
             if (patch.env !== undefined) {
               await secretsSvc.syncEnvBindingsForTarget(
-                locked.companyId,
-                { targetType: "routine", targetId: locked.id },
+                currentRoutine.companyId,
+                { targetType: "routine", targetId: currentRoutine.id },
                 candidate.env,
                 { db: tx },
               );
             }
-            return locked;
+            return mapRoutine(currentRoutine);
           }
         }
 
@@ -1753,13 +1846,16 @@ export function routineService(
             variables: candidate.variables,
             env: candidate.env,
             updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
+            updatedByUserId: repair.responsibleUserId ?? currentRoutine.updatedByUserId,
             updatedAt: new Date(),
           })
           .where(eq(routines.id, id))
           .returning();
         if (!updated) return null;
-        const { routine } = await appendRoutineRevision(txDb, updated, actor, {
+        const { routine } = await appendRoutineRevision(txDb, updated, {
+          ...actor,
+          userId: repair.responsibleUserId ?? currentRoutine.updatedByUserId ?? null,
+        }, {
           changeSummary: "Updated routine",
         });
         if (patch.env !== undefined) {
@@ -1770,9 +1866,9 @@ export function routineService(
             { db: tx },
           );
         }
-        return routine;
+        return mapRoutine(routine);
       });
-      return updatedRoutine;
+      return updatedRoutine ? mapRoutine(updatedRoutine as RoutineRow) : null;
     },
 
     createTrigger: async (
@@ -1810,11 +1906,19 @@ export function routineService(
       const { trigger, revision } = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+        const lockedRoutine = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, routine.id))
+          .then((rows) => rows[0] ?? routine);
+        const repairedRoutineResult = await repairRoutineResponsibleUserAttribution(txDb, lockedRoutine, actor);
+        const routineForWrite = repairedRoutineResult.repaired ? repairedRoutineResult.routine : lockedRoutine;
+        const responsibleUserId = repairedRoutineResult.responsibleUserId ?? routineForWrite.createdByUserId ?? null;
         const [createdTrigger] = await txDb
           .insert(routineTriggers)
           .values({
-            companyId: routine.companyId,
-            routineId: routine.id,
+            companyId: routineForWrite.companyId,
+            routineId: routineForWrite.id,
             kind: input.kind,
             label: input.label ?? null,
             enabled: input.enabled ?? true,
@@ -1827,13 +1931,15 @@ export function routineService(
             replayWindowSec: input.kind === "webhook" ? input.replayWindowSec : null,
             lastRotatedAt: input.kind === "webhook" ? new Date() : null,
             createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
+            createdByUserId: responsibleUserId,
             updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
+            updatedByUserId: responsibleUserId,
           })
           .returning();
-        const latestRoutine = await txDb.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0] ?? routine);
-        const appended = await appendRoutineRevision(txDb, latestRoutine, actor, {
+        const appended = await appendRoutineRevision(txDb, routineForWrite, {
+          ...actor,
+          userId: responsibleUserId,
+        }, {
           changeSummary: `Created ${input.kind} trigger`,
         });
         return { trigger: createdTrigger, revision: appended.revision };
@@ -1883,6 +1989,15 @@ export function routineService(
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
+        const routine = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, existing.routineId))
+          .then((rows) => rows[0] ?? null);
+        if (!routine) throw notFound("Routine not found");
+        const repair = await repairRoutineResponsibleUserAttribution(txDb, routine, actor);
+        const routineForWrite = repair.repaired ? repair.routine : routine;
+        const responsibleUserId = repair.responsibleUserId ?? routineForWrite.createdByUserId ?? null;
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
@@ -1894,19 +2009,16 @@ export function routineService(
             signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
             replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
             updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
+            updatedByUserId: responsibleUserId,
             updatedAt: new Date(),
           })
           .where(eq(routineTriggers.id, id))
           .returning();
         if (!updated) return null;
-        const routine = await txDb
-          .select()
-          .from(routines)
-          .where(eq(routines.id, existing.routineId))
-          .then((rows) => rows[0] ?? null);
-        if (!routine) throw notFound("Routine not found");
-        const appended = await appendRoutineRevision(txDb, routine, actor, {
+        const appended = await appendRoutineRevision(txDb, routineForWrite, {
+          ...actor,
+          userId: responsibleUserId,
+        }, {
           changeSummary: `Updated ${existing.kind} trigger`,
         });
         return { trigger: updated as RoutineTrigger, revision: appended.revision };
@@ -1920,14 +2032,20 @@ export function routineService(
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
-        await txDb.delete(routineTriggers).where(eq(routineTriggers.id, id));
         const routine = await txDb
           .select()
           .from(routines)
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
-        const appended = await appendRoutineRevision(txDb, routine, actor, {
+        const repair = await repairRoutineResponsibleUserAttribution(txDb, routine, actor);
+        const routineForWrite = repair.repaired ? repair.routine : routine;
+        const responsibleUserId = repair.responsibleUserId ?? routineForWrite.createdByUserId ?? null;
+        await txDb.delete(routineTriggers).where(eq(routineTriggers.id, id));
+        const appended = await appendRoutineRevision(txDb, routineForWrite, {
+          ...actor,
+          userId: responsibleUserId,
+        }, {
           changeSummary: `Deleted ${existing.kind} trigger`,
         });
         return { deleted: true, revision: appended.revision };
@@ -1945,6 +2063,29 @@ export function routineService(
       return result;
     },
 
+    repairResponsibleUserAttribution: async (
+      routineId: string,
+      actor: Actor,
+    ): Promise<{ routine: Routine; revision: RoutineRevision | null; repaired: boolean; responsibleUserId: string | null }> => {
+      const existing = await getRoutineById(routineId);
+      if (!existing) throw notFound("Routine not found");
+      const result = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.id} for update`);
+        const locked = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, existing.id))
+          .then((rows) => rows[0] ?? null);
+        if (!locked) throw notFound("Routine not found");
+        return repairRoutineResponsibleUserAttribution(txDb, locked, actor);
+      });
+      return {
+        ...result,
+        routine: mapRoutine(result.routine),
+      };
+    },
+
     rotateTriggerSecret: async (
       id: string,
       actor: Actor,
@@ -1960,23 +2101,29 @@ export function routineService(
       const { trigger, revision } = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
-        const [updated] = await txDb
-          .update(routineTriggers)
-          .set({
-            lastRotatedAt: new Date(),
-            updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
-            updatedAt: new Date(),
-          })
-          .where(eq(routineTriggers.id, id))
-          .returning();
         const routine = await txDb
           .select()
           .from(routines)
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
-        const appended = await appendRoutineRevision(txDb, routine, actor, {
+        const repair = await repairRoutineResponsibleUserAttribution(txDb, routine, actor);
+        const routineForWrite = repair.repaired ? repair.routine : routine;
+        const responsibleUserId = repair.responsibleUserId ?? routineForWrite.createdByUserId ?? null;
+        const [updated] = await txDb
+          .update(routineTriggers)
+          .set({
+            lastRotatedAt: new Date(),
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: responsibleUserId,
+            updatedAt: new Date(),
+          })
+          .where(eq(routineTriggers.id, id))
+          .returning();
+        const appended = await appendRoutineRevision(txDb, routineForWrite, {
+          ...actor,
+          userId: responsibleUserId,
+        }, {
           changeSummary: "Rotated webhook trigger secret",
         });
         return { trigger: updated, revision: appended.revision };
@@ -2043,23 +2190,29 @@ export function routineService(
           .where(eq(routines.id, existingRoutine.id))
           .then((rows) => rows[0] ?? null);
         if (!locked) throw notFound("Routine not found");
-        if (locked.latestRevisionId === targetRevision.id) {
+        const repair = await repairRoutineResponsibleUserAttribution(txDb, locked, actor);
+        const currentRoutine = repair.repaired ? repair.routine : locked;
+        const responsibleUserId = repair.responsibleUserId ?? currentRoutine.createdByUserId ?? null;
+        if (currentRoutine.latestRevisionId === targetRevision.id) {
           throw conflict("Selected revision is already the latest revision", {
-            currentRevisionId: locked.latestRevisionId,
+            currentRevisionId: currentRoutine.latestRevisionId,
           });
         }
 
         const currentTriggers = await txDb
           .select({ id: routineTriggers.id })
           .from(routineTriggers)
-          .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)));
+          .where(and(eq(routineTriggers.companyId, currentRoutine.companyId), eq(routineTriggers.routineId, currentRoutine.id)));
         const currentTriggerIds = new Set(currentTriggers.map((trigger) => trigger.id));
         const missingWebhookTriggers = snapshot.triggers
           .filter((trigger) => trigger.kind === "webhook" && !currentTriggerIds.has(trigger.id));
         const recreatedWebhookSecrets = new Map<string, { publicId: string; secretId: string; secretMaterial: RoutineTriggerSecretRestoreMaterial }>();
         for (const trigger of missingWebhookTriggers) {
           const publicId = crypto.randomBytes(12).toString("hex");
-          const created = await createWebhookSecret(locked.companyId, locked.id, actor, txDb);
+          const created = await createWebhookSecret(currentRoutine.companyId, currentRoutine.id, {
+            ...actor,
+            userId: responsibleUserId,
+          }, txDb);
           recreatedWebhookSecrets.set(trigger.id, {
             publicId,
             secretId: created.secret.id,
@@ -2088,24 +2241,24 @@ export function routineService(
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
             updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
+            updatedByUserId: responsibleUserId,
             updatedAt: now,
           })
-          .where(eq(routines.id, locked.id))
+          .where(eq(routines.id, currentRoutine.id))
           .returning();
 
         const snapshotTriggerIds = new Set(snapshot.triggers.map((trigger) => trigger.id));
         if (snapshotTriggerIds.size === 0) {
           await txDb
             .delete(routineTriggers)
-            .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)));
+            .where(and(eq(routineTriggers.companyId, currentRoutine.companyId), eq(routineTriggers.routineId, currentRoutine.id)));
         } else {
           await txDb
             .delete(routineTriggers)
             .where(
               and(
-                eq(routineTriggers.companyId, locked.companyId),
-                eq(routineTriggers.routineId, locked.id),
+                eq(routineTriggers.companyId, currentRoutine.companyId),
+                eq(routineTriggers.routineId, currentRoutine.id),
                 not(inArray(routineTriggers.id, snapshot.triggers.map((trigger) => trigger.id))),
               ),
             );
@@ -2115,7 +2268,7 @@ export function routineService(
           const current = await txDb
             .select()
             .from(routineTriggers)
-            .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.id, triggerSnapshot.id)))
+            .where(and(eq(routineTriggers.companyId, currentRoutine.companyId), eq(routineTriggers.id, triggerSnapshot.id)))
             .then((rows) => rows[0] ?? null);
           const webhookSecret = recreatedWebhookSecrets.get(triggerSnapshot.id);
           const restoredNextRunAt = triggerSnapshot.kind === "schedule" && triggerSnapshot.enabled
@@ -2123,8 +2276,8 @@ export function routineService(
             ? nextCronTickInTimeZone(triggerSnapshot.cronExpression, triggerSnapshot.timezone, now)
             : null;
           const baseValues = {
-            companyId: locked.companyId,
-            routineId: locked.id,
+            companyId: currentRoutine.companyId,
+            routineId: currentRoutine.id,
             kind: triggerSnapshot.kind,
             label: triggerSnapshot.label,
             enabled: triggerSnapshot.enabled,
@@ -2136,7 +2289,7 @@ export function routineService(
             replayWindowSec: triggerSnapshot.kind === "webhook" ? triggerSnapshot.replayWindowSec : null,
             nextRunAt: restoredNextRunAt,
             updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
+            updatedByUserId: responsibleUserId,
             updatedAt: now,
           };
           if (current) {
@@ -2146,24 +2299,27 @@ export function routineService(
               id: triggerSnapshot.id,
               ...baseValues,
               createdByAgentId: actor.agentId ?? null,
-              createdByUserId: actor.userId ?? null,
+              createdByUserId: responsibleUserId,
               createdAt: now,
             });
           }
         }
 
-        const appended = await appendRoutineRevision(txDb, restoredRoutine ?? locked, actor, {
+        const appended = await appendRoutineRevision(txDb, restoredRoutine ?? currentRoutine, {
+          ...actor,
+          userId: responsibleUserId,
+        }, {
           changeSummary: `Restored from revision ${targetRevision.revisionNumber}`,
           restoredFromRevisionId: targetRevision.id,
         });
         await secretsSvc.syncEnvBindingsForTarget(
-          locked.companyId,
-          { targetType: "routine", targetId: locked.id },
+          currentRoutine.companyId,
+          { targetType: "routine", targetId: currentRoutine.id },
           routineSnapshot.env,
           { db: tx },
         );
         return {
-          routine: appended.routine,
+          routine: mapRoutine(appended.routine),
           revision: appended.revision,
           restoredFromRevisionId: targetRevision.id,
           restoredFromRevisionNumber: targetRevision.revisionNumber,

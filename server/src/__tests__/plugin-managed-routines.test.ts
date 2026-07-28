@@ -6,12 +6,14 @@ import {
   agentConfigRevisions,
   agents,
   companies,
+  companyMemberships,
   createDb,
   issues,
   pluginManagedResources,
   plugins,
   projects,
   routineRuns,
+  routineRevisions,
   routineTriggers,
   routines,
 } from "@paperclipai/db";
@@ -115,7 +117,9 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
     await db.delete(pluginManagedResources);
     await db.delete(agents);
     await db.delete(projects);
+    await db.delete(routineRevisions);
     await db.delete(plugins);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -221,6 +225,61 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
     const reconciled = await services.routines.managedReconcile({ companyId, routineKey: "nightly-lint" });
     expect(reconciled.status).toBe("resolved");
     expect(reconciled.routine?.title).toBe("Operator renamed lint");
+  });
+
+  it("repairs responsible user attribution during reconcile", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin();
+    const [owner] = await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: `owner-${randomUUID()}`,
+      status: "active",
+      membershipRole: "owner",
+    }).returning();
+
+    const agent = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    const project = await services.projects.reconcileManaged({ companyId, projectKey: "operations" });
+    const created = await services.routines.managedReconcile({ companyId, routineKey: "nightly-lint" });
+    expect(created.routine).toMatchObject({
+      assigneeAgentId: agent.agentId,
+      projectId: project.projectId,
+      responsibleUserId: owner.principalId,
+    });
+
+    await db
+      .update(routines)
+      .set({
+        createdByUserId: "built-in-bundles",
+        updatedByUserId: "built-in-bundles",
+        updatedAt: new Date(),
+      })
+      .where(eq(routines.id, created.routineId!));
+    await db
+      .update(routineRevisions)
+      .set({ createdByUserId: "built-in-bundles" })
+      .where(eq(routineRevisions.id, created.routine!.latestRevisionId!));
+
+    const reconciled = await services.routines.managedReconcile({ companyId, routineKey: "nightly-lint" });
+
+    expect(reconciled.status).toBe("resolved");
+    expect(reconciled.routine?.responsibleUserId).toBe(owner.principalId);
+    expect(reconciled.routine?.latestRevisionNumber).toBeGreaterThan(created.routine!.latestRevisionNumber);
+
+    const repairedRoutine = await db
+      .select()
+      .from(routines)
+      .where(eq(routines.id, created.routineId!))
+      .then((rows) => rows[0]!);
+    const repairedRevision = await db
+      .select()
+      .from(routineRevisions)
+      .where(eq(routineRevisions.id, repairedRoutine.latestRevisionId!))
+      .then((rows) => rows[0]!);
+
+    expect(repairedRoutine.createdByUserId).toBe(owner.principalId);
+    expect(repairedRoutine.updatedByUserId).toBe(owner.principalId);
+    expect(repairedRevision.createdByUserId).toBe(owner.principalId);
+    expect(repairedRevision.snapshot.routine.responsibleUserId).toBe(owner.principalId);
   });
 
   it("creates routine operation issues with plugin visibility and managed project scoping", async () => {

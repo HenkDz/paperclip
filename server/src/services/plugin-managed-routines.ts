@@ -5,7 +5,6 @@ import {
   pluginManagedResources,
   plugins,
   projects,
-  routines,
   routineTriggers,
 } from "@paperclipai/db";
 import type {
@@ -203,11 +202,7 @@ export function pluginManagedRoutineService(
   async function getRoutineWithManagedBy(companyId: string, declaration: PluginManagedRoutineDeclaration) {
     const binding = await getBinding(companyId, declaration.routineKey);
     if (!binding) return null;
-    const routine = await db
-      .select()
-      .from(routines)
-      .where(and(eq(routines.companyId, companyId), eq(routines.id, binding.resourceId)))
-      .then((rows) => rows[0] ?? null);
+    const routine = await routinesSvc.get(binding.resourceId);
     if (!routine) return null;
     return {
       ...routine,
@@ -402,9 +397,10 @@ export function pluginManagedRoutineService(
     const declaration = declarationFor(routineKey);
     const current = await get(routineKey, companyId);
     if (current.routine) {
+      await routinesSvc.repairResponsibleUserAttribution(current.routine.id, { agentId: null, userId: null });
       await upsertBinding(companyId, declaration, current.routine.id);
       await ensureDefaultTriggers(current.routine.id, declaration);
-      return current;
+      return get(routineKey, companyId);
     }
     return createManagedRoutine(companyId, declaration, overrides);
   }
