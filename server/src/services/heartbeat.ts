@@ -1605,6 +1605,31 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
+export function persistProjectWorkspaceContextInSessionParams(input: {
+  sessionParams: Record<string, unknown> | null;
+  resolvedWorkspace: Pick<ResolvedWorkspaceForRun, "cwd" | "projectId" | "workspaceId" | "repoUrl" | "repoRef">;
+}) {
+  const nextParams: Record<string, unknown> = {
+    ...(input.sessionParams ?? {}),
+  };
+  const cwd = readNonEmptyString(input.resolvedWorkspace.cwd);
+  const projectId = readNonEmptyString(input.resolvedWorkspace.projectId);
+  const projectWorkspaceId = readNonEmptyString(input.resolvedWorkspace.workspaceId);
+  const repoUrl = readNonEmptyString(input.resolvedWorkspace.repoUrl);
+  const repoRef = readNonEmptyString(input.resolvedWorkspace.repoRef);
+
+  if (cwd) nextParams.cwd = cwd;
+  if (projectId) nextParams.projectId = projectId;
+  if (projectWorkspaceId) {
+    nextParams.projectWorkspaceId = projectWorkspaceId;
+    nextParams.workspaceId = projectWorkspaceId;
+  }
+  if (repoUrl) nextParams.repoUrl = repoUrl;
+  if (repoRef) nextParams.repoRef = repoRef;
+
+  return normalizeSessionParams(nextParams);
+}
+
 function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
@@ -3684,6 +3709,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
+    const sessionProjectId = readNonEmptyString(previousSessionParams?.projectId);
+    const sessionProjectWorkspaceId =
+      readNonEmptyString(previousSessionParams?.projectWorkspaceId) ??
+      readNonEmptyString(previousSessionParams?.workspaceId);
     const issueProjectRef = issueId
       ? await db
           .select({
@@ -3694,10 +3723,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const sessionWorkspaceRef =
+      !issueProjectRef?.projectId && !contextProjectId && sessionProjectWorkspaceId
+        ? await db
+            .select({
+              id: projectWorkspaces.id,
+              projectId: projectWorkspaces.projectId,
+              repoUrl: projectWorkspaces.repoUrl,
+              repoRef: projectWorkspaces.repoRef,
+            })
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, agent.companyId),
+                eq(projectWorkspaces.id, sessionProjectWorkspaceId),
+              ),
+            )
+            .then((rows) => rows[0] ?? null)
+        : null;
     const issueProjectId = issueProjectRef?.projectId ?? null;
     let preferredProjectWorkspaceId =
-      issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
-    let resolvedProjectId = issueProjectId ?? contextProjectId;
+      issueProjectRef?.projectWorkspaceId ??
+      contextProjectWorkspaceId ??
+      sessionWorkspaceRef?.id ??
+      sessionProjectWorkspaceId ??
+      null;
+    let resolvedProjectId =
+      issueProjectId ??
+      contextProjectId ??
+      sessionWorkspaceRef?.projectId ??
+      sessionProjectId ??
+      null;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const configuredAgentCwd = readNonEmptyString(parseObject(agent.adapterConfig)?.cwd);
 
@@ -6056,12 +6112,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select({
         id: issues.id,
         projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+        repoUrl: projectWorkspaces.repoUrl,
+        repoRef: projectWorkspaces.repoRef,
         status: issues.status,
         priority: issues.priority,
         updatedAt: issues.updatedAt,
         createdAt: issues.createdAt,
       })
       .from(issues)
+      .leftJoin(projectWorkspaces, eq(projectWorkspaces.id, issues.projectWorkspaceId))
       .where(
         and(
           eq(issues.companyId, agent.companyId),
@@ -6097,6 +6157,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       issueId: selected.id,
       projectId: selected.projectId ?? null,
+      projectWorkspaceId: selected.projectWorkspaceId ?? null,
+      repoUrl: readNonEmptyString(selected.repoUrl),
+      repoRef: readNonEmptyString(selected.repoRef),
       taskId: selected.id,
       taskKey: selected.id,
     };
@@ -7781,6 +7844,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
+    const persistedPreviousSessionParams = persistProjectWorkspaceContextInSessionParams({
+      sessionParams: previousSessionParams,
+      resolvedWorkspace: {
+        cwd: executionWorkspace.cwd,
+        projectId: executionWorkspace.projectId ?? resolvedWorkspace.projectId,
+        workspaceId: executionWorkspace.workspaceId,
+        repoUrl: executionWorkspace.repoUrl,
+        repoRef: executionWorkspace.repoRef,
+      },
+    });
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
@@ -8227,9 +8300,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const nextSessionState = resolveNextSessionState({
         codec: sessionCodec,
         adapterResult,
-        previousParams: previousSessionParams,
+        previousParams: persistedPreviousSessionParams,
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
         previousLegacySessionId: runtimeForAdapter.sessionId,
+      });
+      const persistedNextSessionParams = persistProjectWorkspaceContextInSessionParams({
+        sessionParams: nextSessionState.params,
+        resolvedWorkspace: {
+          cwd: executionWorkspace.cwd,
+          projectId: executionWorkspace.projectId ?? resolvedWorkspace.projectId,
+          workspaceId: executionWorkspace.workspaceId,
+          repoUrl: executionWorkspace.repoUrl,
+          repoRef: executionWorkspace.repoRef,
+        },
       });
       const rawUsage = normalizeUsageTotals(adapterResult.usage);
       const sessionUsageResolution = await resolveNormalizedUsageForSession({
@@ -8487,7 +8570,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: nextSessionState.params,
+              sessionParamsJson: persistedNextSessionParams,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -8565,7 +8648,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: previousSessionParams,
+            sessionParamsJson: persistedPreviousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
@@ -9130,6 +9213,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         if (!readNonEmptyString(enrichedContextSnapshot.projectId) && timerIssueContext.projectId) {
           enrichedContextSnapshot.projectId = timerIssueContext.projectId;
+        }
+        if (
+          !readNonEmptyString(enrichedContextSnapshot.projectWorkspaceId) &&
+          timerIssueContext.projectWorkspaceId
+        ) {
+          enrichedContextSnapshot.projectWorkspaceId = timerIssueContext.projectWorkspaceId;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.repoUrl) && timerIssueContext.repoUrl) {
+          enrichedContextSnapshot.repoUrl = timerIssueContext.repoUrl;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.repoRef) && timerIssueContext.repoRef) {
+          enrichedContextSnapshot.repoRef = timerIssueContext.repoRef;
         }
         issueId = timerIssueContext.issueId;
       }

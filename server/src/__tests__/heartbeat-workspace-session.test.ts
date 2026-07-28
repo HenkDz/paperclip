@@ -11,6 +11,7 @@ import {
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
+  persistProjectWorkspaceContextInSessionParams,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -140,6 +141,33 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
 
     expect(result.sessionParams).toBeNull();
     expect(result.warning).toContain("Starting a fresh session");
+  });
+});
+
+describe("persistProjectWorkspaceContextInSessionParams", () => {
+  it("persists project-scoped workspace metadata alongside the adapter session state", () => {
+    const result = persistProjectWorkspaceContextInSessionParams({
+      sessionParams: {
+        sessionId: "session-1",
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: "/tmp/internal-ops-paperclip",
+        projectId: "project-internal-ops",
+        workspaceId: "workspace-paperclip",
+        repoUrl: "https://github.com/HenkDz/paperclip.git",
+        repoRef: "main",
+      }),
+    });
+
+    expect(result).toEqual({
+      sessionId: "session-1",
+      cwd: "/tmp/internal-ops-paperclip",
+      projectId: "project-internal-ops",
+      projectWorkspaceId: "workspace-paperclip",
+      workspaceId: "workspace-paperclip",
+      repoUrl: "https://github.com/HenkDz/paperclip.git",
+      repoRef: "main",
+    });
   });
 });
 

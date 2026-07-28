@@ -3,6 +3,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   activityLog,
@@ -79,6 +80,7 @@ describeEmbeddedPostgres("heartbeat timer wake context", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(activityLog);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -180,6 +182,9 @@ describeEmbeddedPostgres("heartbeat timer wake context", () => {
       taskId: issueId,
       taskKey: issueId,
       projectId,
+      projectWorkspaceId: workspaceId,
+      repoUrl: "https://github.com/HenkDz/paperclip.git",
+      repoRef: "master",
       wakeReason: "heartbeat_timer",
       wakeSource: "timer",
       wakeTriggerDetail: "system",
