@@ -59,6 +59,11 @@ type ResolvedInteractionResult = {
   continuationIssue?: IssueWakeTarget | null;
 };
 
+type ExpiredRequestConfirmationResult = {
+  interaction: IssueThreadInteraction;
+  continuationIssue: IssueWakeTarget | null;
+};
+
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
 
@@ -144,7 +149,7 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
-function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+function shouldReturnConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -561,7 +566,7 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
-      if (shouldReturnAcceptedConfirmationToCreatorAgent({
+      if (shouldReturnConfirmationToCreatorAgent({
         issue: issueContext,
         current: args.current,
         actor: args.actor,
@@ -1013,7 +1018,7 @@ export function issueThreadInteractionService(db: Db) {
       issue: { id: string; companyId: string },
       comment: { id: string; createdAt: Date | string; authorUserId?: string | null },
       actor: InteractionActor,
-    ) => {
+    ): Promise<ExpiredRequestConfirmationResult[]> => {
       if (!comment.authorUserId) return [];
 
       const rows = await db
@@ -1040,33 +1045,81 @@ export function issueThreadInteractionService(db: Db) {
       if (superseded.length === 0) return [];
 
       const now = new Date();
-      const expired: IssueThreadInteraction[] = [];
+      const expired: ExpiredRequestConfirmationResult[] = [];
       for (const row of superseded) {
-        const [updated] = await db
-          .update(issueThreadInteractions)
-          .set({
-            status: "expired",
-            result: {
-              version: 1,
-              outcome: "superseded_by_comment",
-              commentId: comment.id,
-            },
-            resolvedByAgentId: actor.agentId ?? null,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedAt: now,
-            updatedAt: now,
-          })
-          .where(and(
-            eq(issueThreadInteractions.id, row.id),
-            eq(issueThreadInteractions.status, "pending"),
-          ))
-          .returning();
-        if (updated) expired.push(hydrateInteraction(updated));
+        const outcome = await db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: {
+                version: 1,
+                outcome: "superseded_by_comment",
+                commentId: comment.id,
+              },
+              resolvedByAgentId: actor.agentId ?? null,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!updated) return null;
+
+          const issueContext = await tx
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+            })
+            .from(issues)
+            .where(eq(issues.id, issue.id))
+            .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+          if (!issueContext || issueContext.companyId !== issue.companyId) {
+            throw notFound("Issue not found");
+          }
+
+          let continuationIssue: IssueWakeTarget | null = null;
+          if (shouldReturnConfirmationToCreatorAgent({
+            issue: issueContext,
+            current: row,
+            actor,
+          })) {
+            const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+            const returnedIssue = await issueService(db).update(issue.id, {
+              status: returnStatus,
+              assigneeAgentId: row.createdByAgentId,
+              assigneeUserId: null,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.userId ?? null,
+            }, tx);
+
+            if (returnedIssue) {
+              continuationIssue = {
+                id: returnedIssue.id,
+                assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+                assigneeUserId: returnedIssue.assigneeUserId ?? null,
+                status: returnedIssue.status,
+              };
+            }
+          } else {
+            await touchIssue(tx, issue.id);
+          }
+
+          return {
+            interaction: hydrateInteraction(updated),
+            continuationIssue,
+          } satisfies ExpiredRequestConfirmationResult;
+        });
+        if (outcome) expired.push(outcome);
       }
 
-      if (expired.length > 0) {
-        await touchIssue(db, issue.id);
-      }
       return expired;
     },
 
