@@ -79,10 +79,21 @@ describeEmbeddedPostgres("heartbeat timer wake context", () => {
     await db.delete(documentRevisions);
     await db.delete(issueDocuments);
     await db.delete(documents);
-    await db.delete(activityLog);
     await db.delete(agentTaskSessions);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await db.delete(activityLog);
+      await db.delete(heartbeatRunEvents);
+      try {
+        await db.delete(heartbeatRuns);
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("activity_log_run_id_heartbeat_runs_id_fk") || attempt === 2) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(issues);
