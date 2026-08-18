@@ -929,6 +929,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
     }, {
       userId: "local-board",
