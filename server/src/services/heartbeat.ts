@@ -171,7 +171,7 @@ import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
-import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { isManagedProjectWorkspaceCwd, isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -3919,7 +3919,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
     const sessionCwdLooksUnsafe = isUnsafeSessionWorkspaceCwd(sessionCwd);
-    if (sessionCwd && !sessionCwdLooksUnsafe) {
+    const sessionCwdNeedsProjectBinding = isManagedProjectWorkspaceCwd(sessionCwd) && !resolvedProjectId;
+    if (sessionCwd && !sessionCwdLooksUnsafe && !sessionCwdNeedsProjectBinding) {
       const sessionCwdExists = await fs
         .stat(sessionCwd)
         .then((stats) => stats.isDirectory())
@@ -3944,6 +3945,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (sessionCwd && sessionCwdLooksUnsafe) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
+      );
+    } else if (sessionCwd && sessionCwdNeedsProjectBinding) {
+      warnings.push(
+        `Saved session workspace "${sessionCwd}" points at a managed project workspace without a bound project context. Using fallback workspace "${cwd}" for this run.`,
       );
     } else if (sessionCwd) {
       warnings.push(
