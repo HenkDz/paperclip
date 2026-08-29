@@ -1807,6 +1807,7 @@ function shouldAutoCheckoutIssueForWake(input: {
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
+  if (issueStatus === "blocked" && wakeReason !== "issue_blockers_resolved") return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
