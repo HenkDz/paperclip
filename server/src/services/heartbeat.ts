@@ -1769,6 +1769,7 @@ function shouldAutoCheckoutIssueForWake(input: {
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
+  if (issueStatus === "blocked" && wakeReason !== "issue_blockers_resolved") return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
@@ -6173,7 +6174,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedContext = parseObject(claimed.contextSnapshot);
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
+    const claimedIssue =
+      claimedIssueId
+        ? await db
+            .select({
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+    if (
+      claimedIssueId &&
+      claimedIssue &&
+      claimedWakeReason !== "source_scoped_recovery_action" &&
+      claimedIssue.status !== "blocked"
+    ) {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
