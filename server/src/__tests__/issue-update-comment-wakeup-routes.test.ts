@@ -24,7 +24,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -382,6 +384,66 @@ describe("issue update comment wakeups", () => {
           interactionStatus: "expired",
           wakeReason: "issue_commented",
           source: "issue.comment",
+        }),
+      }),
+    );
+  });
+
+  it("wakes the returned agent when historical supersede catch-up runs", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      status: "in_review",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
+      {
+        interaction: {
+          id: "interaction-9",
+          kind: "request_confirmation",
+          status: "expired",
+          sourceCommentId: null,
+          sourceRunId: "run-9",
+          result: {
+            version: 1,
+            outcome: "superseded_by_comment",
+            commentId: "comment-9",
+          },
+        },
+        continuationIssue: {
+          id: existing.id,
+          assigneeAgentId: ASSIGNEE_AGENT_ID,
+          status: "todo",
+        },
+      },
+    ]);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValueOnce([]);
+
+    const res = await request(await createApp()).get(`/api/issues/${existing.id}/interactions`);
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          interactionId: "interaction-9",
+          interactionKind: "request_confirmation",
+          interactionStatus: "expired",
+          sourceRunId: "run-9",
+          mutation: "interaction",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          interactionId: "interaction-9",
+          interactionKind: "request_confirmation",
+          interactionStatus: "expired",
+          wakeReason: "issue_commented",
+          source: "issue.interactions.catchup_superseded_by_comment",
         }),
       }),
     );

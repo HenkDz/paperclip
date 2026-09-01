@@ -5305,6 +5305,12 @@ export function issueRoutes(
       actor,
       source: "issue.interactions.catchup_superseded_by_comment",
     });
+    queueExpiredInteractionContinuationWakeups({
+      heartbeat,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.interactions.catchup_superseded_by_comment",
+    });
 
     const interactions = await interactionSvc.listForIssue(id);
     res.json(interactions);

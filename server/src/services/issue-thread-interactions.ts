@@ -1125,7 +1125,7 @@ export function issueThreadInteractionService(db: Db) {
 
     expireRequestConfirmationsSupersededByHistoricalComments: async (
       issue: { id: string; companyId: string },
-    ) => {
+    ): Promise<ExpiredRequestConfirmationResult[]> => {
       const [rows, comments] = await Promise.all([
         db
           .select()
@@ -1150,12 +1150,12 @@ export function issueThreadInteractionService(db: Db) {
       if (rows.length === 0 || comments.length === 0) return [];
 
       const now = new Date();
-      const expired: IssueThreadInteraction[] = [];
+      const expired: ExpiredRequestConfirmationResult[] = [];
       const supersededByComment = new Map<
         string,
         {
           comment: (typeof comments)[number];
-          rowIds: string[];
+          rows: IssueThreadInteractionRow[];
         }
       >();
       for (const row of rows) {
@@ -1170,40 +1170,89 @@ export function issueThreadInteractionService(db: Db) {
 
         const group = supersededByComment.get(supersedingComment.id);
         if (group) {
-          group.rowIds.push(row.id);
+          group.rows.push(row);
         } else {
           supersededByComment.set(supersedingComment.id, {
             comment: supersedingComment,
-            rowIds: [row.id],
+            rows: [row],
           });
         }
       }
 
-      for (const { comment, rowIds } of supersededByComment.values()) {
-        const updatedRows = await db
-          .update(issueThreadInteractions)
-          .set({
-            status: "expired",
-            result: {
-              version: 1,
-              outcome: "superseded_by_comment",
-              commentId: comment.id,
-            },
-            resolvedByAgentId: null,
-            resolvedByUserId: comment.authorUserId,
-            resolvedAt: now,
-            updatedAt: now,
-          })
-          .where(and(
-            inArray(issueThreadInteractions.id, rowIds),
-            eq(issueThreadInteractions.status, "pending"),
-          ))
-          .returning();
-        expired.push(...updatedRows.map(hydrateInteraction));
-      }
+      for (const { comment, rows: groupedRows } of supersededByComment.values()) {
+        for (const row of groupedRows) {
+          const outcome = await db.transaction(async (tx) => {
+            const [updated] = await tx
+              .update(issueThreadInteractions)
+              .set({
+                status: "expired",
+                result: {
+                  version: 1,
+                  outcome: "superseded_by_comment",
+                  commentId: comment.id,
+                },
+                resolvedByAgentId: null,
+                resolvedByUserId: comment.authorUserId,
+                resolvedAt: now,
+                updatedAt: now,
+              })
+              .where(and(
+                eq(issueThreadInteractions.id, row.id),
+                eq(issueThreadInteractions.status, "pending"),
+              ))
+              .returning();
+            if (!updated) return null;
 
-      if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+            const issueContext = await tx
+              .select({
+                id: issues.id,
+                companyId: issues.companyId,
+                status: issues.status,
+                assigneeAgentId: issues.assigneeAgentId,
+                assigneeUserId: issues.assigneeUserId,
+              })
+              .from(issues)
+              .where(eq(issues.id, issue.id))
+              .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+            if (!issueContext || issueContext.companyId !== issue.companyId) {
+              throw notFound("Issue not found");
+            }
+
+            let continuationIssue: IssueWakeTarget | null = null;
+            if (shouldReturnConfirmationToCreatorAgent({
+              issue: issueContext,
+              current: row,
+              actor: { userId: comment.authorUserId ?? null, agentId: null },
+            })) {
+              const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+              const returnedIssue = await issueService(db).update(issue.id, {
+                status: returnStatus,
+                assigneeAgentId: row.createdByAgentId,
+                assigneeUserId: null,
+                actorAgentId: null,
+                actorUserId: comment.authorUserId ?? null,
+              }, tx);
+
+              if (returnedIssue) {
+                continuationIssue = {
+                  id: returnedIssue.id,
+                  assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+                  assigneeUserId: returnedIssue.assigneeUserId ?? null,
+                  status: returnedIssue.status,
+                };
+              }
+            } else {
+              await touchIssue(tx, issue.id);
+            }
+
+            return {
+              interaction: hydrateInteraction(updated),
+              continuationIssue,
+            } satisfies ExpiredRequestConfirmationResult;
+          });
+          if (outcome) expired.push(outcome);
+        }
       }
       return expired;
     },
