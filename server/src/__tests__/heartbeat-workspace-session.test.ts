@@ -11,6 +11,7 @@ import {
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
+  persistProjectWorkspaceContextInSessionParams,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -101,7 +102,27 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
     expect(result.warning).toBeNull();
   });
 
-  it("does not migrate when resolved workspace id differs from previous session workspace id", () => {
+  it("drops saved session params when they point to a different repo workspace", () => {
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId: "agent-123",
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/website-default",
+        workspaceId: "workspace-website",
+        repoUrl: "https://github.com/markusbaier/harwayexperience.com.git",
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: "/tmp/internal-ops-paperclip",
+        workspaceId: "workspace-paperclip",
+        repoUrl: "https://github.com/HenkDz/paperclip.git",
+      }),
+    });
+
+    expect(result.sessionParams).toBeNull();
+    expect(result.warning).toContain("Starting a fresh session");
+  });
+
+  it("drops fallback session params when the resolved workspace id differs", () => {
     const agentId = "agent-123";
     const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
 
@@ -118,12 +139,35 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       }),
     });
 
-    expect(result.sessionParams).toEqual({
-      sessionId: "session-1",
-      cwd: fallbackCwd,
-      workspaceId: "workspace-1",
+    expect(result.sessionParams).toBeNull();
+    expect(result.warning).toContain("Starting a fresh session");
+  });
+});
+
+describe("persistProjectWorkspaceContextInSessionParams", () => {
+  it("persists project-scoped workspace metadata alongside the adapter session state", () => {
+    const result = persistProjectWorkspaceContextInSessionParams({
+      sessionParams: {
+        sessionId: "session-1",
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: "/tmp/internal-ops-paperclip",
+        projectId: "project-internal-ops",
+        workspaceId: "workspace-paperclip",
+        repoUrl: "https://github.com/HenkDz/paperclip.git",
+        repoRef: "main",
+      }),
     });
-    expect(result.warning).toBeNull();
+
+    expect(result).toEqual({
+      sessionId: "session-1",
+      cwd: "/tmp/internal-ops-paperclip",
+      projectId: "project-internal-ops",
+      projectWorkspaceId: "workspace-paperclip",
+      workspaceId: "workspace-paperclip",
+      repoUrl: "https://github.com/HenkDz/paperclip.git",
+      repoRef: "main",
+    });
   });
 });
 

@@ -706,6 +706,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
   };
+  allowExpired?: boolean;
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
   forceFreshSession?: boolean;
@@ -719,7 +720,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     input.interaction.continuationPolicy === "wake_assignee_on_accept"
     && input.interaction.status !== "accepted"
   ) return;
-  if (input.interaction.status === "expired") return;
+  if (input.interaction.status === "expired" && input.allowExpired !== true) return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
 
   const forceFreshSession = input.forceFreshSession === true;
@@ -1356,11 +1357,20 @@ export function issueRoutes(
 
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
-    interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
+    interactions: Array<{
+      interaction: { id: string; kind: string; status: string; result?: unknown };
+      continuationIssue: { id: string; assigneeAgentId: string | null; status: string } | null;
+    } | {
+      id: string;
+      kind: string;
+      status: string;
+      result?: unknown;
+    }>;
     actor: ReturnType<typeof getActorInfo>;
     source: string;
   }) {
-    for (const interaction of input.interactions) {
+    for (const outcome of input.interactions) {
+      const interaction = "interaction" in outcome ? outcome.interaction : outcome;
       await logActivity(db, {
         companyId: input.issue.companyId,
         actorType: input.actor.actorType,
@@ -1378,6 +1388,31 @@ export function issueRoutes(
           source: input.source,
           result: interaction.result ?? null,
         },
+      });
+    }
+  }
+
+  function queueExpiredInteractionContinuationWakeups(input: {
+    heartbeat: ReturnType<typeof heartbeatService>;
+    interactions: Array<{
+      interaction: { id: string; kind: string; status: string; sourceCommentId?: string | null; sourceRunId?: string | null };
+      continuationIssue: { id: string; assigneeAgentId: string | null; status: string } | null;
+    }>;
+    actor: ReturnType<typeof getActorInfo>;
+    source: string;
+  }) {
+    for (const outcome of input.interactions) {
+      if (!outcome.continuationIssue) continue;
+      queueResolvedInteractionContinuationWakeup({
+        heartbeat: input.heartbeat,
+        issue: outcome.continuationIssue,
+        interaction: {
+          ...outcome.interaction,
+          continuationPolicy: "wake_assignee",
+        },
+        allowExpired: true,
+        actor: input.actor,
+        source: input.source,
       });
     }
   }
@@ -4768,6 +4803,12 @@ export function issueRoutes(
         actor,
         source: "issue.comment",
       });
+      queueExpiredInteractionContinuationWakeups({
+        heartbeat,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.comment",
+      });
 
     } else if (updateReferenceSummaryAfter) {
       issueResponse = {
@@ -5260,6 +5301,12 @@ export function issueRoutes(
     const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
     await logExpiredRequestConfirmations({
       issue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.interactions.catchup_superseded_by_comment",
+    });
+    queueExpiredInteractionContinuationWakeups({
+      heartbeat,
       interactions: expiredInteractions,
       actor,
       source: "issue.interactions.catchup_superseded_by_comment",
@@ -5946,6 +5993,12 @@ export function issueRoutes(
     );
     await logExpiredRequestConfirmations({
       issue: currentIssue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.comment",
+    });
+    queueExpiredInteractionContinuationWakeups({
+      heartbeat,
       interactions: expiredInteractions,
       actor,
       source: "issue.comment",

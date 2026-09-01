@@ -4654,7 +4654,14 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceSettings !== undefined;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          const shouldInheritProjectWorkspace =
+            projectWorkspaceId == null &&
+            workspaceSource.projectWorkspaceId &&
+            (
+              inheritExecutionWorkspaceFromIssueId != null ||
+              workspaceSource.executionWorkspaceId != null
+            );
+          if (shouldInheritProjectWorkspace) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
